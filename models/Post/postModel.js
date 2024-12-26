@@ -62,11 +62,25 @@ const postSchema = new mongoose.Schema({
     type: mongoose.Schema.Types.ObjectId,
     ref: 'Category'
   }],
-  displayedWithin: {
-    type: [String],
-    enum: ['category', 'subcategory', 'subsubcategory'],
-    default: []
-  },
+  displayedWithin: [
+    {
+      category: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Category',
+        required: false,
+      },
+      subcategory: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Category',
+        required: false,
+      },
+      subsubcategory: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Category',
+        required: false,
+      },
+    },
+  ],
   placementTags: {
     type: [String],
     default: []
@@ -128,27 +142,56 @@ postSchema.pre('save', async function (next) {
     } else {
       this.slug = slug;
     }
+
+    try {
+      if (this.category) {
+        const buildDisplayedWithin = async (categoryId) => {
+          const result = {};
+          let currentCat = await mongoose.model('Category').findById(categoryId);
+
+          if (currentCat) {
+            result.category = currentCat._id;
+            if (currentCat.parentCategory) {
+              const parentCat = await mongoose.model('Category').findById(currentCat.parentCategory);
+              result.subcategory = currentCat._id;
+              result.category = parentCat._id;
+
+              if (parentCat.parentCategory) {
+                const grandparentCat = await mongoose.model('Category').findById(parentCat.parentCategory);
+                result.subsubcategory = currentCat._id;
+                result.subcategory = parentCat._id;
+                result.category = grandparentCat._id;
+              }
+            }
+          }
+
+          return result;
+        };
+
+        this.displayedWithin = [await buildDisplayedWithin(this.category)];
+      }
+    } catch (error) {
+      console.error('Error generating displayedWithin:', error);
+      return next(error);
+    }
+
   }
 
   try {
-    const buildCategoryPath = async (categoryId) => {
-      const slugs = [];
+    // Find the main parent category slug
+    const findMainParentSlug = async (categoryId) => {
       let currentCat = await mongoose.model('Category').findById(categoryId);
-
-      while (currentCat) {
-        slugs.unshift(currentCat.slug);
-        if (currentCat.parentCategory) {
-          currentCat = await mongoose.model('Category').findById(currentCat.parentCategory);
-        } else {
-          break;
-        }
+      while (currentCat && currentCat.parentCategory) {
+        currentCat = await mongoose.model('Category').findById(currentCat.parentCategory);
       }
-
-      return slugs;
+      return currentCat ? currentCat.slug : null;
     };
 
-    const categorySlugs = await buildCategoryPath(this.category);
-    this.fullPathSlug = [...categorySlugs, this.slug].join('/');
+    // Get the main parent category slug
+    const mainParentSlug = this.category ? await findMainParentSlug(this.category) : null;
+
+    // Construct the fullPathSlug
+    this.fullPathSlug = mainParentSlug ? `${mainParentSlug}/${this.slug}` : this.slug;
   } catch (error) {
     console.error('Error generating full path slug:', error);
     return next(error);
