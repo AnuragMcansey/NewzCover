@@ -5,6 +5,7 @@ const POST_LIST_PROJECTION = {
   components: 0,
   longDescription: 0
 };
+
 // Create new post
 const createPost = async (req, res) => {
   try {
@@ -55,10 +56,13 @@ const createPost = async (req, res) => {
 // Get all posts with filters
 const getPosts = async (req, res) => {
   try {
-    const { status, category, topic } = req.query;
-    const query = {};
+    const { status, category, topic, includeDrafts } = req.query;
 
-    if (status) query.status = status;
+    const query = {};
+    if (!includeDrafts) {
+      query.status = { $ne: 'draft' }; // Exclude drafts by default
+    }
+    if (status) query.status = status; // Override specific status filtering
     if (category) query.category = category;
     if (topic) query.topic = topic;
 
@@ -84,9 +88,18 @@ const getPosts = async (req, res) => {
 // Get post by ID
 const getPostById = async (req, res) => {
   try {
+    const { includeDrafts } = req.query; // Extract the query parameter
+
+    // console.log("includeDrafts query param:", includeDrafts); // Log the query parameter
+
+    // Build the query based on whether the includeDrafts parameter is set
     const query = req.params.id.match(/^[0-9a-fA-F]{24}$/)
       ? { _id: req.params.id }
       : { slug: req.params.id };
+
+    if (!includeDrafts) {
+      query.status = { $ne: 'draft' }; // Exclude drafts by default
+    }
 
     const post = await Post.findOne(query)
       .populate({
@@ -110,14 +123,24 @@ const getPostById = async (req, res) => {
   }
 };
 
+
 // Update post
 const updatePost = async (req, res) => {
   try {
-    const post = await Post.findByIdAndUpdate(
-      req.params.id,
-      { ...req.body, updatedAt: Date.now() },
-      { new: true }
-    )
+    const existingPost = await Post.findById(req.params.id);
+    if (!existingPost) {
+      return res.status(404).json({ error: 'Post not found' });
+    }
+    if (req.body.slug) {
+      req.body.slug = req.body.slug.split('-').slice(0, -1).join('-');
+    }
+    Object.assign(existingPost, {
+      ...req.body,
+      uniqueIdentifier: existingPost.uniqueIdentifier,
+      updatedAt: Date.now()
+    });
+    await existingPost.save();
+    const updatedPost = await Post.findById(existingPost._id)
       .populate({
         path: 'category',
         populate: {
@@ -128,13 +151,9 @@ const updatePost = async (req, res) => {
         }
       })
       .populate('topic');
-
-    if (!post) {
-      return res.status(404).json({ error: 'Post not found' });
-    }
-
-    res.status(200).json(post);
+    res.status(200).json(updatedPost);
   } catch (error) {
+    console.error('Update error:', error);
     res.status(400).json({ error: error.message });
   }
 };
@@ -165,7 +184,8 @@ const getPostsByCategory = async (req, res) => {
 
     let query = {
       category: category._id,
-      topic: null
+      topic: null,
+      status: { $ne: 'draft' } // Exclude drafts
     };
 
     if (subcategorySlug) {
@@ -321,7 +341,10 @@ const getPostsByCategoryAndTopic = async (req, res) => {
       .populate('topic')
       .sort({ createdAt: -1 });
 
-    res.status(200).json(posts);
+    // Filter posts to only include those with status "published"
+    const publishedPosts = posts.filter(post => post.status === 'published');
+
+    res.status(200).json(publishedPosts);
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
@@ -330,6 +353,8 @@ const getPostsByCategoryAndTopic = async (req, res) => {
 
 const getCategoryBlogsWithTopics = async (req, res) => {
   try {
+    const { includeDrafts } = req.query;
+
     // 1. Get the category path
     const category = await Category.findOne({
       slug: 'meta-description' // Parent category
@@ -368,10 +393,14 @@ const getCategoryBlogsWithTopics = async (req, res) => {
     };
 
     // Get blogs without topics
-    const generalBlogs = await Post.find({
+    const generalBlogsQuery = {
       category: subcategory._id,
       topic: null
-    }).populate({
+    };
+    if (!includeDrafts) {
+      generalBlogsQuery.status = { $ne: 'draft' }; // Exclude drafts by default
+    }
+    const generalBlogs = await Post.find(generalBlogsQuery).populate({
       path: 'category',
       populate: {
         path: 'parentCategory'
@@ -382,10 +411,14 @@ const getCategoryBlogsWithTopics = async (req, res) => {
 
     // Get blogs for each topic
     const topicBlogsPromises = topics.map(async (topic) => {
-      const blogs = await Post.find({
+      const topicBlogsQuery = {
         category: subcategory._id,
         topic: topic._id
-      }).populate({
+      };
+      if (!includeDrafts) {
+        topicBlogsQuery.status = { $ne: 'draft' }; // Exclude drafts by default
+      }
+      const blogs = await Post.find(topicBlogsQuery).populate({
         path: 'category',
         populate: {
           path: 'parentCategory'
@@ -492,26 +525,33 @@ const getCategoryHierarchyBlogs = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
 const getAllBlogsByCategory = async (req, res) => {
   try {
     const { categorySlug } = req.params;
+    const { includeDrafts } = req.query;
+
     const category = await Category.findOne({ slug: categorySlug });
     if (!category) {
       return res.status(404).json({ error: 'Category not found' });
     }
 
-    const blogs = await Post.find(
-      { category: category._id },
-      POST_LIST_PROJECTION
-    ).populate({
-      path: 'category',
-      populate: {
-        path: 'parentCategory',
+    const query = { category: category._id };
+    if (!includeDrafts) {
+      query.status = { $ne: 'draft' }; // Exclude drafts by default
+    }
+
+    const blogs = await Post.find(query, POST_LIST_PROJECTION)
+      .populate({
+        path: 'category',
         populate: {
-          path: 'parentCategory'
+          path: 'parentCategory',
+          populate: {
+            path: 'parentCategory'
+          }
         }
-      }
-    }).populate('topic');
+      })
+      .populate('topic');
 
     const topicBlogs = {};
     const generalBlogs = [];

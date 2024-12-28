@@ -27,7 +27,7 @@ schedulerService.init();
 app.use(compression());
 
 // Use morgan for logging HTTP requests
-app.use(morgan('combined'));
+// app.use(morgan('combined'));
 
 app.use((req, res, next) => {
     res.setHeader(
